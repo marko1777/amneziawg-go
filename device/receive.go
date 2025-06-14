@@ -129,7 +129,7 @@ func (device *Device) RoutineReceiveIncoming(
 		}
 		deathSpiral = 0
 
-		device.aSecMux.RLock()
+		device.awg.ASecMux.RLock()
 		// handle each packet in the batch
 		for i, size := range sizes[:count] {
 			if size < MinMessageSize {
@@ -137,10 +137,14 @@ func (device *Device) RoutineReceiveIncoming(
 			}
 
 			// check size of packet
-
 			packet := bufsArrs[i][:size]
 			var msgType uint32
-			if device.isAdvancedSecurityOn() {
+			if device.isAWG() {
+				// TODO:
+				// if awg.WaitResponse.ShouldWait.IsSet() {
+				// 	awg.WaitResponse.Channel <- struct{}{}
+				// }
+
 				if assumedMsgType, ok := packetSizeToMsgType[size]; ok {
 					junkSize := msgTypeToJunkSize[assumedMsgType]
 					// transport size can align with other header types;
@@ -149,13 +153,14 @@ func (device *Device) RoutineReceiveIncoming(
 					if msgType == assumedMsgType {
 						packet = packet[junkSize:]
 					} else {
-						device.log.Verbosef("Transport packet lined up with another msg type")
+						device.log.Verbosef("transport packet lined up with another msg type")
 						msgType = binary.LittleEndian.Uint32(packet[:4])
 					}
 				} else {
 					msgType = binary.LittleEndian.Uint32(packet[:4])
 					if msgType != MessageTransportType {
-						device.log.Verbosef("ASec: Received message with unknown type")
+						// probably a junk packet
+						device.log.Verbosef("aSec: Received message with unknown type: %d", msgType)
 						continue
 					}
 				}
@@ -245,7 +250,7 @@ func (device *Device) RoutineReceiveIncoming(
 			default:
 			}
 		}
-		device.aSecMux.RUnlock()
+		device.awg.ASecMux.RUnlock()
 		for peer, elemsContainer := range elemsByPeer {
 			if peer.isRunning.Load() {
 				peer.queue.inbound.c <- elemsContainer
@@ -304,7 +309,7 @@ func (device *Device) RoutineHandshake(id int) {
 
 	for elem := range device.queue.handshake.c {
 
-		device.aSecMux.RLock()
+		device.awg.ASecMux.RLock()
 
 		// handle cookie fields and ratelimiting
 
@@ -456,7 +461,7 @@ func (device *Device) RoutineHandshake(id int) {
 			peer.SendKeepalive()
 		}
 	skip:
-		device.aSecMux.RUnlock()
+		device.awg.ASecMux.RUnlock()
 		device.PutMessageBuffer(elem.buffer)
 	}
 }

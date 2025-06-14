@@ -126,10 +126,28 @@ func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 	var sendBuffer [][]byte
 	// so only packet processed for cookie generation
 	var junkedHeader []byte
-	if peer.device.isAdvancedSecurityOn() {
-		peer.device.aSecMux.RLock()
-		junks, err := peer.device.junkCreator.createJunkPackets()
-		peer.device.aSecMux.RUnlock()
+
+	if peer.device.version >= VersionAwg {
+		var junks [][]byte
+		if peer.device.version == VersionAwgSpecialHandshake {
+			peer.device.awg.ASecMux.RLock()
+			// set junks depending on packet type
+			junks = peer.device.awg.HandshakeHandler.GenerateSpecialJunk()
+			if junks == nil {
+				junks = peer.device.awg.HandshakeHandler.GenerateControlledJunk()
+				if junks != nil {
+					peer.device.log.Verbosef("%v - Controlled junks sent", peer)
+				}
+			} else {
+				peer.device.log.Verbosef("%v - Special junks sent", peer)
+			}
+			peer.device.awg.ASecMux.RUnlock()
+		} else {
+			junks = make([][]byte, 0, peer.device.awg.ASecCfg.JunkPacketCount)
+		}
+		peer.device.awg.ASecMux.RLock()
+		err := peer.device.awg.JunkCreator.CreateJunkPackets(&junks)
+		peer.device.awg.ASecMux.RUnlock()
 
 		if err != nil {
 			peer.device.log.Errorf("%v - %v", peer, err)
@@ -145,19 +163,19 @@ func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 			}
 		}
 
-		peer.device.aSecMux.RLock()
-		if peer.device.aSecCfg.initPacketJunkSize != 0 {
-			buf := make([]byte, 0, peer.device.aSecCfg.initPacketJunkSize)
+		peer.device.awg.ASecMux.RLock()
+		if peer.device.awg.ASecCfg.InitPacketJunkSize != 0 {
+			buf := make([]byte, 0, peer.device.awg.ASecCfg.InitPacketJunkSize)
 			writer := bytes.NewBuffer(buf[:0])
-			err = peer.device.junkCreator.appendJunk(writer, peer.device.aSecCfg.initPacketJunkSize)
+			err = peer.device.awg.JunkCreator.AppendJunk(writer, peer.device.awg.ASecCfg.InitPacketJunkSize)
 			if err != nil {
 				peer.device.log.Errorf("%v - %v", peer, err)
-				peer.device.aSecMux.RUnlock()
+				peer.device.awg.ASecMux.RUnlock()
 				return err
 			}
 			junkedHeader = writer.Bytes()
 		}
-		peer.device.aSecMux.RUnlock()
+		peer.device.awg.ASecMux.RUnlock()
 	}
 
 	var buf [MessageInitiationSize]byte
@@ -172,7 +190,7 @@ func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 
 	sendBuffer = append(sendBuffer, junkedHeader)
 
-	err = peer.SendBuffers(sendBuffer)
+	err = peer.SendAndCountBuffers(sendBuffer)
 	if err != nil {
 		peer.device.log.Errorf("%v - Failed to send handshake initiation: %v", peer, err)
 	}
@@ -194,20 +212,20 @@ func (peer *Peer) SendHandshakeResponse() error {
 		return err
 	}
 	var junkedHeader []byte
-	if peer.device.isAdvancedSecurityOn() {
-		peer.device.aSecMux.RLock()
-		if peer.device.aSecCfg.responsePacketJunkSize != 0 {
-			buf := make([]byte, 0, peer.device.aSecCfg.responsePacketJunkSize)
+	if peer.device.isAWG() {
+		peer.device.awg.ASecMux.RLock()
+		if peer.device.awg.ASecCfg.ResponsePacketJunkSize != 0 {
+			buf := make([]byte, 0, peer.device.awg.ASecCfg.ResponsePacketJunkSize)
 			writer := bytes.NewBuffer(buf[:0])
-			err = peer.device.junkCreator.appendJunk(writer, peer.device.aSecCfg.responsePacketJunkSize)
+			err = peer.device.awg.JunkCreator.AppendJunk(writer, peer.device.awg.ASecCfg.ResponsePacketJunkSize)
 			if err != nil {
-				peer.device.aSecMux.RUnlock()
+				peer.device.awg.ASecMux.RUnlock()
 				peer.device.log.Errorf("%v - %v", peer, err)
 				return err
 			}
 			junkedHeader = writer.Bytes()
 		}
-		peer.device.aSecMux.RUnlock()
+		peer.device.awg.ASecMux.RUnlock()
 	}
 	var buf [MessageResponseSize]byte
 	writer := bytes.NewBuffer(buf[:0])
@@ -228,7 +246,7 @@ func (peer *Peer) SendHandshakeResponse() error {
 	peer.timersAnyAuthenticatedPacketSent()
 
 	// TODO: allocation could be avoided
-	err = peer.SendBuffers([][]byte{junkedHeader})
+	err = peer.SendAndCountBuffers([][]byte{junkedHeader})
 	if err != nil {
 		peer.device.log.Errorf("%v - Failed to send handshake response: %v", peer, err)
 	}
@@ -582,7 +600,7 @@ func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
 		peer.timersAnyAuthenticatedPacketTraversal()
 		peer.timersAnyAuthenticatedPacketSent()
 
-		err := peer.SendBuffers(bufs)
+		err := peer.SendAndCountBuffers(bufs)
 		if dataSent {
 			peer.timersDataSent()
 		}
